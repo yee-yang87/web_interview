@@ -1,0 +1,253 @@
+version: 2.1
+
+references:
+  set_environment_variables: &set_environment_variables
+    run:
+      name: Set Environment Variables
+      command: |
+        echo 'export CI_SHA1=$CIRCLE_SHA1' >> ${BASH_ENV}
+        echo 'export CI_BRANCH=$CIRCLE_BRANCH' >> ${BASH_ENV}
+        echo 'export CI_BUILD_NUM=$CIRCLE_BUILD_NUM' >> ${BASH_ENV}
+        echo 'export CI_TAG=$CIRCLE_TAG' >> ${BASH_ENV}
+        echo 'export AWS_DEFAULT_REGION=us-east-1' >> ${BASH_ENV}
+        echo "export AWS_ACCESS_KEY_ID=\$${ENV_NAME}_AWS_ACCESS_KEY_ID" >> ${BASH_ENV}
+        echo "export AWS_SECRET_ACCESS_KEY=\$${ENV_NAME}_AWS_SECRET_ACCESS_KEY" >> ${BASH_ENV}
+
+  deploy_steps: &deploy_steps
+    docker:
+      - image: 540619935031.dkr.ecr.us-east-1.amazonaws.com/fairwinds-ci-image:v8.0-alpine
+        aws_auth:
+          aws_access_key_id: $STAGING_AWS_ACCESS_KEY_ID
+          aws_secret_access_key: $STAGING_AWS_SECRET_ACCESS_KEY
+    steps:
+      - checkout
+      - *set_environment_variables
+      - run: helm init --client-only --stable-repo-url=https://charts.helm.sh/stable
+      - run: prepare-kubectl
+      - run: kubectl config use-context ${ENV_NAME}
+      - run: helm-deploy -f ${ROK8S_CONFIG}
+
+  docker_build_and_push: &docker_build_and_push
+    run:
+      name: Build Docker Images
+      command: |
+        prepare-awscli
+        docker-pull -f deploy/build.config
+        docker-build -f deploy/build.config
+        docker-push -f deploy/build.config
+
+jobs:
+  lintmd:
+    docker:
+      - image: 540619935031.dkr.ecr.us-east-1.amazonaws.com/nodedev:master
+        aws_auth:
+          aws_access_key_id: $STAGING_AWS_ACCESS_KEY_ID
+          aws_secret_access_key: $STAGING_AWS_SECRET_ACCESS_KEY
+    steps:
+      - checkout
+      - run: runlintmd.sh
+  checkout_code:
+    docker:
+      - image: 540619935031.dkr.ecr.us-east-1.amazonaws.com/nodedev:master
+        aws_auth:
+          aws_access_key_id: $STAGING_AWS_ACCESS_KEY_ID
+          aws_secret_access_key: $STAGING_AWS_SECRET_ACCESS_KEY
+    steps:
+      - *set_environment_variables
+      - checkout
+      - run: mkdir -p conf
+      - run: npm config set //registry.npmjs.org/:_authToken=${NPM_TOKEN} && npm install
+      - run: list-outdated-pkgs.sh
+      - run: npm outdated || true
+      - run: npm audit --production || true
+      - run: cat templates/build_data.yml.template | sed "s/__BRANCH__/${CI_BRANCH}/g" | sed "s/__SHA__/${CI_SHA1}/g" | sed "s/__BUILDNUM__/${CI_BUILD_NUM}/g" |  sed "s/__TAG__/${CIRCLE_TAG}/g" > build_data.yml
+      - run: mkdir -p dist && mkdir -p dist/img
+      - persist_to_workspace:
+          root: .
+          paths:
+            - ./*
+  lintjs:
+    docker:
+      - image: 540619935031.dkr.ecr.us-east-1.amazonaws.com/nodedev:master
+        aws_auth:
+          aws_access_key_id: $STAGING_AWS_ACCESS_KEY_ID
+          aws_secret_access_key: $STAGING_AWS_SECRET_ACCESS_KEY
+    steps:
+      - attach_workspace:
+          at: ./
+      - *set_environment_variables
+      - run: npm i
+      - run: npm run lint
+  sast-audit:
+    docker:
+      - image: 540619935031.dkr.ecr.us-east-1.amazonaws.com/nodedev:master
+        aws_auth:
+          aws_access_key_id: $STAGING_AWS_ACCESS_KEY_ID
+          aws_secret_access_key: $STAGING_AWS_SECRET_ACCESS_KEY
+    steps:
+      - attach_workspace:
+          at: ./
+      - *set_environment_variables
+      - run: npm config set //registry.npmjs.org/:_authToken=${NPM_TOKEN} && npm install --production
+      - run: npm audit --production || true
+  sast-outdated:
+    docker:
+      - image: 540619935031.dkr.ecr.us-east-1.amazonaws.com/nodedev:master
+        aws_auth:
+          aws_access_key_id: $STAGING_AWS_ACCESS_KEY_ID
+          aws_secret_access_key: $STAGING_AWS_SECRET_ACCESS_KEY
+    steps:
+      - attach_workspace:
+          at: ./
+      - *set_environment_variables
+      - run: npm config set //registry.npmjs.org/:_authToken=${NPM_TOKEN} && npm install --production
+      - run: npm outdated || true
+  build_code:
+    docker:
+      - image: 540619935031.dkr.ecr.us-east-1.amazonaws.com/nodedev:master
+        aws_auth:
+          aws_access_key_id: $STAGING_AWS_ACCESS_KEY_ID
+          aws_secret_access_key: $STAGING_AWS_SECRET_ACCESS_KEY
+    steps:
+      - attach_workspace:
+          at: ./
+      - *set_environment_variables
+      - run: npm -verbose run build > buildoutput.txt
+      - persist_to_workspace:
+          root: .
+          paths:
+            - dist/*
+  build_container:
+    docker:
+      - image: 540619935031.dkr.ecr.us-east-1.amazonaws.com/fairwinds-ci-image:v8.0-alpine
+        aws_auth:
+          aws_access_key_id: $STAGING_AWS_ACCESS_KEY_ID
+          aws_secret_access_key: $STAGING_AWS_SECRET_ACCESS_KEY
+    steps:
+      - attach_workspace:
+          at: .
+      - *set_environment_variables
+      - setup_remote_docker
+      - *docker_build_and_push
+    environment:
+      ROK8S_CONFIG: deploy/build.config
+      ENV_NAME: STAGING
+  test_chart:
+    docker:
+      - image: 540619935031.dkr.ecr.us-east-1.amazonaws.com/fairwinds-ci-image:v8.0-alpine
+        aws_auth:
+          aws_access_key_id: $STAGING_AWS_ACCESS_KEY_ID
+          aws_secret_access_key: $STAGING_AWS_SECRET_ACCESS_KEY
+    steps:
+      - attach_workspace:
+          at: .
+      - run: helm init --client-only --stable-repo-url=https://charts.helm.sh/stable
+      - run: cd deploy/charts/ms-consolefrontend && helm dependency update && cd ../../..
+  deploy_feature:
+    <<: *deploy_steps
+    environment:
+      ROK8S_CONFIG: deploy/feature.config
+      ENV_NAME: STAGING
+  deploy_staging:
+    <<: *deploy_steps
+    environment:
+      ROK8S_CONFIG: deploy/staging.config
+      ENV_NAME: STAGING
+  deploy_production:
+    <<: *deploy_steps
+    environment:
+      ROK8S_CONFIG: deploy/production.config
+      ENV_NAME: PRODUCTION
+
+workflows:
+  version: 2
+  release:
+    jobs:
+      - lintmd:
+          context: estatespace
+          filters:
+            tags:
+              only: /.*/
+      - checkout_code:
+          context: estatespace
+          filters:
+            tags:
+              only: /.*/
+      - lintjs:
+          context: estatespace
+          requires:
+            - checkout_code
+          filters:
+            tags:
+              only: /.*/
+      - sast-audit:
+          context: estatespace
+          requires:
+            - checkout_code
+          filters:
+            tags:
+              only: /.*/
+      - sast-outdated:
+          context: estatespace
+          requires:
+            - checkout_code
+          filters:
+            tags:
+              only: /.*/
+      - build_code:
+          context: estatespace
+          requires:
+            - checkout_code
+          filters:
+            tags:
+              only: /.*/
+      - build_container:
+          context: estatespace
+          filters:
+            branches:
+              only:
+                - /(.*\/)?[eE][sS]-.*/
+                - /(.*\/)?feature.*/
+                - master
+            tags:
+              only: /.*/
+          requires:
+            - build_code
+      - test_chart:
+          context: estatespace
+          requires:
+            - checkout_code
+          filters:
+            tags:
+              only: /.*/
+      - deploy_feature:
+          context: estatespace
+          requires:
+            - build_container
+            - test_chart
+          filters:
+            branches:
+              only:
+                - /(.*\/)?feature.*/
+            tags:
+              ignore: /.*/
+      - deploy_staging:
+          context: estatespace
+          requires:
+            - build_container
+            - test_chart
+          filters:
+            branches:
+              only: master
+            tags:
+              ignore: /.*/
+      - deploy_production:
+          context: estatespace
+          requires:
+            - build_container
+            - test_chart
+          filters:
+            branches:
+              ignore: /.*/
+            tags:
+              only: /\d+\.\d+\.\d+$/
