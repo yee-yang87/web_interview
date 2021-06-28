@@ -17,7 +17,7 @@ const containerCN = cntl`
 
 const App = () => {
   return (
-    <div className="bg-black h-full w-full flex justify-center">
+    <div className="bg-black h-full w-full flex justify-center overflow-auto">
       <div className="p-10 w-1/3">
         <p>Create a screen here!</p>
         <p>
