@@ -1,5 +1,5 @@
 {
-  "name": "gpMS_ConsoleFrontend",
+  "name": "webinterview",
   "version": "1.0.0",
   "description": "",
   "scripts": {
@@ -7,7 +7,7 @@
     "build": "parcel build index.html",
     "storybook": "start-storybook -p 6006",
     "build-storybook": "build-storybook",
-    "lint": "./node_modules/eslint/bin/eslint.js --ext .jsx,.js src",
+    "lint": "node ./node_modules/eslint/bin/eslint.js --ext .jsx,.js src",
     "prepare": "husky install"
   },
   "repository": {
@@ -15,7 +15,7 @@
     "url": "git+https://github.com/GriffinGroupGlobal/gpMS_ConsoleFrontend.git"
   },
   "keywords": [],
-  "author": "",
+  "author": "Yee Yong",
   "license": "ISC",
   "bugs": {
     "url": "https://github.com/GriffinGroupGlobal/gpMS_ConsoleFrontend/issues"

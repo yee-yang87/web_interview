@@ -3,7 +3,7 @@
   "plugins": ["prettier"],
   "parser": "babel-eslint",
   "rules": {
-    "prettier/prettier": ["error"],
+    "no-console": "off",
     "react/jsx-props-no-spreading": [
       "error",
       {
